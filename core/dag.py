@@ -1,6 +1,15 @@
-"""DAG (Directed Acyclic Graph) implementation for workflow orchestration."""
+"""
+DAG (Directed Acyclic Graph) implementation for workflow orchestration.
 
-from typing import Dict, List, Set, Optional
+This module provides:
+- A DAG class for node + edge management
+- Cycle detection
+- Topological sorting (Kahn's Algorithm)
+- Parallel execution level grouping
+- DAG validation helpers
+"""
+
+from typing import Dict, List, Set
 from collections import defaultdict, deque
 
 
@@ -9,182 +18,176 @@ class CycleDetectedError(Exception):
     pass
 
 
+class DAGValidationError(Exception):
+    """Raised when the DAG structure is invalid."""
+    pass
+
+
 class DAG:
     """Directed Acyclic Graph for managing workflow dependencies."""
-    
+
     def __init__(self):
-        """Initialize an empty DAG."""
         self.nodes: Set[str] = set()
         self.edges: Dict[str, List[str]] = defaultdict(list)
         self.reverse_edges: Dict[str, List[str]] = defaultdict(list)
-    
+
+    # -----------------------------
+    # Node + Edge Management
+    # -----------------------------
+
     def add_node(self, node_id: str) -> None:
-        """Add a node to the DAG.
-        
-        Args:
-            node_id: Unique identifier for the node
-        """
+        """Add a node to the DAG."""
+        if not isinstance(node_id, str) or not node_id.strip():
+            raise DAGValidationError(f"Invalid node_id '{node_id}'")
         self.nodes.add(node_id)
-    
+
     def add_edge(self, from_node: str, to_node: str) -> None:
-        """Add a directed edge from one node to another.
-        
-        Args:
-            from_node: Source node ID
-            to_node: Destination node ID
-            
+        """
+        Add a directed edge from one node to another.
+
         Raises:
-            CycleDetectedError: If adding this edge would create a cycle
+            CycleDetectedError: If adding this edge creates a cycle.
+            DAGValidationError: If referencing missing node IDs.
         """
         if from_node not in self.nodes:
-            self.add_node(from_node)
+            raise DAGValidationError(f"Node '{from_node}' not found in DAG.")
         if to_node not in self.nodes:
-            self.add_node(to_node)
-        
-        # Add edge
+            raise DAGValidationError(f"Node '{to_node}' not found in DAG.")
+        if from_node == to_node:
+            raise CycleDetectedError("Self-cycle detected")
+
+        # Add edge temporarily
         self.edges[from_node].append(to_node)
         self.reverse_edges[to_node].append(from_node)
-        
-        # Check for cycles
-        if self._has_cycle():
+
+        # Check for cycle
+        if self._detect_cycle():
             # Rollback
             self.edges[from_node].remove(to_node)
             self.reverse_edges[to_node].remove(from_node)
             raise CycleDetectedError(
-                f"Adding edge from {from_node} to {to_node} would create a cycle"
+                f"Adding edge {from_node} -> {to_node} creates a cycle."
             )
-    
-    def _has_cycle(self) -> bool:
-        """Check if the DAG contains a cycle using DFS.
-        
-        Returns:
-            True if a cycle is detected, False otherwise
-        """
-        visited = set()
-        rec_stack = set()
-        
-        def dfs(node: str) -> bool:
-            visited.add(node)
-            rec_stack.add(node)
-            
-            for neighbor in self.edges.get(node, []):
-                if neighbor not in visited:
-                    if dfs(neighbor):
-                        return True
-                elif neighbor in rec_stack:
-                    return True
-            
-            rec_stack.remove(node)
-            return False
-        
-        for node in self.nodes:
-            if node not in visited:
-                if dfs(node):
-                    return True
-        
-        return False
-    
+
+    # -----------------------------
+    # Cycle Detection
+    # -----------------------------
+
+    def _detect_cycle(self) -> bool:
+        """Detect cycles using Kahn's algorithm (in-degree counter)."""
+        in_degree = {node: len(self.reverse_edges[node]) for node in self.nodes}
+        q = deque([n for n, deg in in_degree.items() if deg == 0])
+        visited = 0
+
+        while q:
+            node = q.popleft()
+            visited += 1
+            for dep in self.edges[node]:
+                in_degree[dep] -= 1
+                if in_degree[dep] == 0:
+                    q.append(dep)
+
+        return visited != len(self.nodes)
+
+    # -----------------------------
+    # Query Helpers
+    # -----------------------------
+
     def get_dependencies(self, node_id: str) -> List[str]:
-        """Get all nodes that the given node depends on (incoming edges).
-        
-        Args:
-            node_id: Node to get dependencies for
-            
-        Returns:
-            List of node IDs that are dependencies
-        """
+        """Return incoming nodes for a given node."""
         return self.reverse_edges.get(node_id, [])
-    
+
     def get_dependents(self, node_id: str) -> List[str]:
-        """Get all nodes that depend on the given node (outgoing edges).
-        
-        Args:
-            node_id: Node to get dependents for
-            
-        Returns:
-            List of node IDs that depend on this node
-        """
+        """Return outgoing nodes for a given node."""
         return self.edges.get(node_id, [])
 
+    # -----------------------------
+    # Validation Helpers
+    # -----------------------------
+
+    def validate_all_nodes_present(self, workflow_nodes: Set[str]) -> None:
+        """Ensure workflow references match DAG nodes."""
+        missing = workflow_nodes - self.nodes
+        if missing:
+            raise DAGValidationError(f"Missing nodes in DAG: {missing}")
+
+    def validate(self) -> None:
+        """Ensure the DAG is valid and acyclic."""
+        if self._detect_cycle():
+            raise CycleDetectedError("DAG contains a cycle.")
+        if len(self.nodes) == 0:
+            raise DAGValidationError("DAG contains no nodes.")
+
+    # -----------------------------
+    # Debugging / Inspection
+    # -----------------------------
+
+    def describe(self) -> Dict[str, List[str]]:
+        """Return a representation of the DAG."""
+        return {node: self.edges[node] for node in self.nodes}
+
+
+# ============================================================
+# Topological Sorting + Execution Level Grouping
+# ============================================================
 
 class TopologicalSorter:
-    """Performs topological sorting on a DAG to determine execution order."""
-    
+    """Perform topological sorting and execution level grouping."""
+
     @staticmethod
-    def sort(dag: DAG) -> List[str]:
-        """Sort nodes in topological order using Kahn's algorithm.
-        
-        Args:
-            dag: The DAG to sort
-            
-        Returns:
-            List of node IDs in topological order
-            
-        Raises:
-            CycleDetectedError: If the graph contains a cycle
-        """
-        # Calculate in-degree for each node
-        in_degree = {node: 0 for node in dag.nodes}
-        for node in dag.nodes:
-            for dependent in dag.get_dependents(node):
-                in_degree[dependent] += 1
-        
-        # Queue of nodes with no dependencies
-        queue = deque([node for node in dag.nodes if in_degree[node] == 0])
-        result = []
-        
-        while queue:
-            # Process node with no dependencies
-            node = queue.popleft()
-            result.append(node)
-            
-            # Reduce in-degree for dependent nodes
-            for dependent in dag.get_dependents(node):
-                in_degree[dependent] -= 1
-                if in_degree[dependent] == 0:
-                    queue.append(dependent)
-        
-        # If all nodes are processed, return the sorted list
-        if len(result) == len(dag.nodes):
-            return result
-        else:
-            # Cycle detected
-            raise CycleDetectedError("Cannot sort DAG: cycle detected")
-    
-    @staticmethod
-    def get_execution_levels(dag: DAG) -> List[List[str]]:
-        """Group nodes into execution levels for parallel processing.
-        
-        Nodes in the same level have no dependencies on each other and can
-        be executed in parallel.
-        
-        Args:
-            dag: The DAG to analyze
-            
-        Returns:
-            List of levels, where each level is a list of node IDs
-        """
+    def topological_sort(dag: DAG) -> List[str]:
+        """Return node IDs in a valid execution order."""
+        dag.validate()
         in_degree = {node: len(dag.get_dependencies(node)) for node in dag.nodes}
-        levels = []
-        
-        while any(degree == 0 for degree in in_degree.values()):
-            # Current level: nodes with no remaining dependencies
-            current_level = [
-                node for node, degree in in_degree.items() if degree == 0
-            ]
-            
-            if not current_level:
+        q = deque([node for node, deg in in_degree.items() if deg == 0])
+
+        result = []
+
+        while q:
+            node = q.popleft()
+            result.append(node)
+
+            for dep in dag.get_dependents(node):
+                in_degree[dep] -= 1
+                if in_degree[dep] == 0:
+                    q.append(dep)
+
+        if len(result) != len(dag.nodes):
+            raise CycleDetectedError("Cycle detected during topological sort")
+
+        return result
+
+    @staticmethod
+    def execution_levels(dag: DAG) -> List[List[str]]:
+        """
+        Group nodes into parallel-executable layers.
+
+        Example:
+            Level 0: ["node1"]
+            Level 1: ["node2", "node3"]
+            Level 2: ["node4"]
+        """
+        dag.validate()
+        in_degree = {n: len(dag.get_dependencies(n)) for n in dag.nodes}
+        levels: List[List[str]] = []
+
+        while True:
+            level = [n for n, deg in in_degree.items() if deg == 0]
+            if not level:
                 break
-            
-            levels.append(current_level)
-            
-            # Remove processed nodes and update dependencies
-            for node in current_level:
-                in_degree[node] = -1  # Mark as processed
-                for dependent in dag.get_dependents(node):
-                    if in_degree[dependent] > 0:
-                        in_degree[dependent] -= 1
-        
+
+            levels.append(level)
+
+            for node in level:
+                in_degree[node] = -1  # Mark processed
+                for dep in dag.get_dependents(node):
+                    in_degree[dep] -= 1
+
+        # Safety: ensure no unprocessed nodes
+        leftover = [n for n, deg in in_degree.items() if deg >= 0]
+        if leftover:
+            raise CycleDetectedError(
+                f"Unreachable or cyclic nodes detected: {leftover}"
+            )
+
         return levels
-
-
