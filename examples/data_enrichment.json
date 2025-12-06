@@ -1,0 +1,82 @@
+{
+  "name": "Data Enrichment Pipeline",
+  "description": "Fetch data from an API, enrich it with AI, and conditionally process it",
+  "nodes": [
+    {
+      "id": "http-1",
+      "type": "http_request",
+      "name": "Fetch User Data",
+      "config": {
+        "method": "GET",
+        "url": "https://jsonplaceholder.typicode.com/users/1",
+        "timeout": 10
+      },
+      "position": {
+        "x": 100,
+        "y": 100
+      }
+    },
+    {
+      "id": "llm-1",
+      "type": "llm_text_generation",
+      "name": "Generate User Bio",
+      "config": {
+        "provider": "openai",
+        "model": "gpt-4",
+        "prompt": "Based on this user data:\nName: {{http-1.data.name}}\nEmail: {{http-1.data.email}}\nCompany: {{http-1.data.company.name}}\n\nGenerate a professional 2-sentence bio for this person.",
+        "temperature": 0.7,
+        "max_tokens": 100
+      },
+      "position": {
+        "x": 300,
+        "y": 100
+      }
+    },
+    {
+      "id": "conditional-1",
+      "type": "conditional_logic",
+      "name": "Check if Verified",
+      "config": {
+        "condition_type": "contains",
+        "value1": "{{http-1.data.email}}",
+        "value2": ".com"
+      },
+      "position": {
+        "x": 500,
+        "y": 100
+      }
+    },
+    {
+      "id": "output-1",
+      "type": "output",
+      "name": "Enriched Data Output",
+      "config": {
+        "format": "json"
+      },
+      "position": {
+        "x": 700,
+        "y": 100
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from_node": "http-1",
+      "to_node": "llm-1"
+    },
+    {
+      "from_node": "http-1",
+      "to_node": "conditional-1"
+    },
+    {
+      "from_node": "llm-1",
+      "to_node": "output-1"
+    },
+    {
+      "from_node": "conditional-1",
+      "to_node": "output-1"
+    }
+  ]
+}
+
+

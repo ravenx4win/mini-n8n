@@ -1,0 +1,85 @@
+{
+  "name": "AI Video Creator",
+  "description": "Generate a video from a text prompt using AI video generation",
+  "nodes": [
+    {
+      "id": "input-1",
+      "type": "user_input",
+      "name": "Video Concept",
+      "config": {
+        "prompt": "Describe the video you want to create",
+        "input_key": "concept",
+        "type": "text"
+      },
+      "position": {
+        "x": 100,
+        "y": 100
+      }
+    },
+    {
+      "id": "llm-1",
+      "type": "llm_text_generation",
+      "name": "Create Video Script",
+      "config": {
+        "provider": "openai",
+        "model": "gpt-4",
+        "prompt": "Create a detailed visual description for a 3-second video about: {{input-1.output}}\n\nDescribe:\n- The scene and setting\n- Actions and movements\n- Visual style and mood\n- Camera angles\n\nKeep it cinematic and detailed.",
+        "temperature": 0.8,
+        "max_tokens": 300
+      },
+      "position": {
+        "x": 300,
+        "y": 100
+      }
+    },
+    {
+      "id": "video-1",
+      "type": "video_generation",
+      "name": "Generate Video",
+      "config": {
+        "provider": "replicate",
+        "model": "zeroscope-v2-xl",
+        "prompt": "{{llm-1.text}}",
+        "duration": 3,
+        "fps": 24
+      },
+      "position": {
+        "x": 500,
+        "y": 100
+      }
+    },
+    {
+      "id": "output-1",
+      "type": "output",
+      "name": "Video Output",
+      "config": {
+        "format": "json",
+        "fields": [
+          "input-1.output",
+          "llm-1.text",
+          "video-1.url"
+        ]
+      },
+      "position": {
+        "x": 700,
+        "y": 100
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from_node": "input-1",
+      "to_node": "llm-1"
+    },
+    {
+      "from_node": "llm-1",
+      "to_node": "video-1"
+    },
+    {
+      "from_node": "video-1",
+      "to_node": "output-1"
+    }
+  ]
+}
+
+
