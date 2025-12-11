@@ -1,8 +1,11 @@
-"""FastAPI application and routes."""
+"""
+API package initializer.
+Exports the FastAPI app and lifespan handler so external modules can run the server.
+"""
 
 from .app import app, lifespan
-from .routes import router
 
-__all__ = ["app", "lifespan", "router"]
-
-
+__all__ = [
+    "app",
+    "lifespan",
+]
