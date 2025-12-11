@@ -1,4 +1,8 @@
-"""Workflow execution engine with dependency resolution and error handling."""
+"""
+Workflow Execution Engine (Mode A - Simple, Linear, Clean)
+Executes workflows using DAG ordering, resolves dependencies,
+runs nodes, handles errors, and stores results.
+"""
 
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -17,10 +21,13 @@ from .cache import ExecutionCache
 logger = logging.getLogger(__name__)
 
 
+# =====================================================================
+# Execution Context
+# =====================================================================
 @dataclass
 class ExecutionContext:
-    """Context for workflow execution."""
-    
+    """Holds data shared during workflow execution."""
+
     workflow_id: str
     execution_id: str
     input_data: Dict[str, Any] = field(default_factory=dict)
@@ -29,10 +36,13 @@ class ExecutionContext:
     use_cache: bool = True
 
 
+# =====================================================================
+# Execution Result
+# =====================================================================
 @dataclass
 class ExecutionResult:
-    """Result of workflow execution."""
-    
+    """Final result returned after workflow execution."""
+
     execution_id: str
     workflow_id: str
     success: bool
@@ -43,9 +53,9 @@ class ExecutionResult:
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     execution_time: float = 0.0
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary."""
+        """Convert to JSON-serializable dict."""
         return {
             "execution_id": self.execution_id,
             "workflow_id": self.workflow_id,
@@ -54,290 +64,210 @@ class ExecutionResult:
             "error": self.error,
             "node_results": {
                 node_id: {
-                    "success": result.success,
-                    "output": result.output,
-                    "error": result.error,
-                    "execution_time": result.execution_time,
-                    "metadata": result.metadata
+                    "success": res.success,
+                    "output": res.output,
+                    "error": res.error,
+                    "execution_time": res.execution_time,
+                    "metadata": res.metadata,
                 }
-                for node_id, result in self.node_results.items()
+                for node_id, res in self.node_results.items()
             },
             "execution_order": self.execution_order,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
-            "execution_time": self.execution_time
+            "execution_time": self.execution_time,
         }
 
 
+# =====================================================================
+# Workflow Executor (Mode A)
+# =====================================================================
 class WorkflowExecutor:
-    """Execute workflows with dependency resolution and caching."""
-    
+    """Executes workflows in simple DAG-based linear order."""
+
     def __init__(self, cache: Optional[ExecutionCache] = None):
-        """Initialize executor.
-        
-        Args:
-            cache: Optional execution cache
-        """
         self.cache = cache or ExecutionCache()
         self.logger = logging.getLogger(__name__)
-    
+
+    # -----------------------------------------------------------------
+    # MAIN EXECUTION ENTRY POINT
+    # -----------------------------------------------------------------
     async def execute(
         self,
         workflow: Workflow,
         input_data: Optional[Dict[str, Any]] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
     ) -> ExecutionResult:
-        """Execute a workflow.
-        
-        Args:
-            workflow: Workflow to execute
-            input_data: Input data for the workflow
-            use_cache: Whether to use caching
-            
-        Returns:
-            ExecutionResult with output or error
-        """
+
         execution_id = str(uuid.uuid4())
         start_time = time.time()
-        
-        # Create execution context
+
         context = ExecutionContext(
             workflow_id=workflow.id,
             execution_id=execution_id,
             input_data=input_data or {},
             variables=input_data or {},
-            use_cache=use_cache
+            use_cache=use_cache,
         )
-        
+
         result = ExecutionResult(
             execution_id=execution_id,
             workflow_id=workflow.id,
             success=False,
-            started_at=datetime.utcnow()
+            started_at=datetime.utcnow(),
         )
-        
+
         try:
-            self.logger.info(f"Starting execution {execution_id} for workflow {workflow.id}")
-            
-            # Validate workflow structure
+            self.logger.info(f"Starting workflow execution {execution_id}")
+
+            # -----------------------------
+            # Validate workflow
+            # -----------------------------
             errors = workflow.validate_structure()
             if errors:
-                raise ValueError(f"Invalid workflow structure: {', '.join(errors)}")
-            
-            # Build DAG from workflow
+                raise ValueError(", ".join(errors))
+
+            # -----------------------------
+            # Build DAG and determine order
+            # -----------------------------
             dag = self._build_dag(workflow)
-            
-            # Get execution order
-            execution_order = TopologicalSorter.sort(dag)
-            result.execution_order = execution_order
-            
-            self.logger.info(f"Execution order: {execution_order}")
-            
-            # Execute nodes in order
-            for node_id in execution_order:
+            order = TopologicalSorter.sort(dag)
+            result.execution_order = order
+
+            # -----------------------------
+            # Execute nodes sequentially
+            # -----------------------------
+            for node_id in order:
                 node = workflow.get_node(node_id)
                 if not node:
-                    raise ValueError(f"Node not found: {node_id}")
-                
-                # Execute node
+                    raise ValueError(f"Missing node: {node_id}")
+
                 node_result = await self._execute_node(node, workflow, context)
                 result.node_results[node_id] = node_result
-                
-                # Check for errors
+
+                # Stop on failure
                 if not node_result.success:
-                    error_msg = f"Node {node_id} failed: {node_result.error}"
-                    self.logger.error(error_msg)
-                    result.error = error_msg
-                    result.success = False
+                    result.error = f"Node {node_id} failed: {node_result.error}"
                     break
-                
-                # Store node output in context
+
                 context.node_outputs[node_id] = node_result.output
-            
-            # If all nodes succeeded, extract final output
+
+            # -----------------------------
+            # Final output
+            # -----------------------------
             if not result.error:
                 result.output = self._extract_output(workflow, context)
                 result.success = True
-                self.logger.info(f"Execution {execution_id} completed successfully")
-            
+
         except CycleDetectedError as e:
-            error_msg = f"Cycle detected in workflow: {e}"
-            self.logger.error(error_msg)
-            result.error = error_msg
+            result.error = f"CycleDetectedError: {str(e)}"
             result.success = False
-        
+
         except Exception as e:
-            error_msg = f"Execution failed: {str(e)}"
-            self.logger.error(error_msg, exc_info=True)
-            result.error = error_msg
+            result.error = f"ExecutionError: {str(e)}"
             result.success = False
-        
+
         finally:
             result.finished_at = datetime.utcnow()
             result.execution_time = time.time() - start_time
-            self.logger.info(
-                f"Execution {execution_id} finished in {result.execution_time:.2f}s"
-            )
-        
+            self.logger.info(f"Workflow finished in {result.execution_time:.2f}s")
+
         return result
-    
+
+    # =================================================================
+    # DAG Construction
+    # =================================================================
     def _build_dag(self, workflow: Workflow) -> DAG:
-        """Build DAG from workflow connections.
-        
-        Args:
-            workflow: Workflow to build DAG from
-            
-        Returns:
-            DAG representing workflow structure
-        """
         dag = DAG()
-        
-        # Add all nodes
+
         for node in workflow.nodes:
             dag.add_node(node.id)
-        
-        # Add connections as edges
-        for conn in workflow.connections:
-            dag.add_edge(conn.from_node, conn.to_node)
-        
+
+        for c in workflow.connections:
+            dag.add_edge(c.from_node, c.to_node)
+
         return dag
-    
-    async def _execute_node(
-        self,
-        node,
-        workflow: Workflow,
-        context: ExecutionContext
-    ) -> NodeResult:
-        """Execute a single node.
-        
-        Args:
-            node: Node to execute
-            workflow: Parent workflow
-            context: Execution context
-            
-        Returns:
-            NodeResult
-        """
+
+    # =================================================================
+    # Execute a Single Node
+    # =================================================================
+    async def _execute_node(self, node, workflow: Workflow, context: ExecutionContext):
         node_id = node.id
         node_type = node.type
         node_config = node.config
-        
+
         try:
-            self.logger.info(f"Executing node {node_id} ({node_type})")
-            
-            # Collect inputs from connected nodes
-            node_inputs = self._collect_node_inputs(node_id, workflow, context)
-            
-            # Check cache
+            self.logger.info(f"Running node {node_id} ({node_type})")
+
+            # Collect inputs
+            node_inputs = self._collect_inputs(node_id, workflow, context)
+
+            # Cache lookup
             if context.use_cache:
-                cached_result = self.cache.get(node_type, node_config, node_inputs)
-                if cached_result is not None:
-                    self.logger.info(f"Using cached result for node {node_id}")
-                    return cached_result
-            
-            # Create node instance
+                cached = self.cache.get(node_type, node_config, node_inputs)
+                if cached:
+                    return cached
+
+            # Instantiate node
             node_class = registry.get_class(node_type)
             if not node_class:
-                raise ValueError(f"Unknown node type: {node_type}")
-            
-            node_instance = node_class(node_id=node_id, config=node_config)
-            
-            # Validate configuration
-            config_errors = node_instance.validate_config()
-            if config_errors:
-                raise ValueError(f"Invalid configuration: {', '.join(config_errors)}")
-            
-            # Execute node
-            start_time = time.time()
-            result = await node_instance.run(node_inputs, context.variables)
-            result.execution_time = time.time() - start_time
-            
-            # Cache result if successful
+                raise ValueError(f"Unregistered node type: {node_type}")
+
+            instance = node_class(node_id=node_id, config=node_config)
+
+            # Validate config
+            errs = instance.validate_config()
+            if errs:
+                raise ValueError(", ".join(errs))
+
+            # Execute
+            start = time.time()
+            result: NodeResult = await instance.run(node_inputs, context.variables)
+            result.execution_time = time.time() - start
+
+            # Save to cache
             if result.success and context.use_cache:
                 self.cache.set(node_type, node_config, node_inputs, result)
-            
-            self.logger.info(
-                f"Node {node_id} executed in {result.execution_time:.2f}s"
-            )
-            
+
             return result
-        
+
         except Exception as e:
-            self.logger.error(f"Error executing node {node_id}: {e}", exc_info=True)
-            return NodeResult(
-                success=False,
-                output=None,
-                error=str(e)
-            )
-    
-    def _collect_node_inputs(
-        self,
-        node_id: str,
-        workflow: Workflow,
-        context: ExecutionContext
-    ) -> Dict[str, Any]:
-        """Collect inputs for a node from connected nodes.
-        
-        Args:
-            node_id: Node ID
-            workflow: Parent workflow
-            context: Execution context
-            
-        Returns:
-            Dictionary of inputs
-        """
+            return NodeResult(success=False, output=None, error=str(e))
+
+    # =================================================================
+    # Gather inputs from previous nodes
+    # =================================================================
+    def _collect_inputs(self, node_id: str, workflow: Workflow, context: ExecutionContext):
         inputs = {}
-        
-        # Get incoming connections
         incoming = workflow.get_node_inputs(node_id)
-        
+
         for conn in incoming:
-            source_node_id = conn.from_node
-            from_output = conn.from_output
-            to_input = conn.to_input
-            
-            # Get output from source node
-            if source_node_id in context.node_outputs:
-                source_output = context.node_outputs[source_node_id]
-                
-                # Extract specific output key
-                if isinstance(source_output, dict) and from_output in source_output:
-                    value = source_output[from_output]
+            src = conn.from_node
+            output_key = conn.from_output
+            input_key = conn.to_input
+
+            if src in context.node_outputs:
+                src_output = context.node_outputs[src]
+
+                # If dict and specific output key exists
+                if isinstance(src_output, dict) and output_key in src_output:
+                    val = src_output[output_key]
                 else:
-                    value = source_output
-                
-                inputs[to_input] = value
-                inputs[source_node_id] = source_output
-        
+                    val = src_output
+
+                inputs[input_key] = val
+                inputs[src] = src_output
+
         return inputs
-    
-    def _extract_output(
-        self,
-        workflow: Workflow,
-        context: ExecutionContext
-    ) -> Any:
-        """Extract final output from workflow execution.
-        
-        Args:
-            workflow: Executed workflow
-            context: Execution context
-            
-        Returns:
-            Final output
-        """
-        # Find output nodes
-        output_nodes = [
-            node for node in workflow.nodes
-            if node.type == "output"
-        ]
-        
+
+    # =================================================================
+    # Extract final workflow output
+    # =================================================================
+    def _extract_output(self, workflow: Workflow, context: ExecutionContext):
+        output_nodes = [n for n in workflow.nodes if n.type == "output"]
         if output_nodes:
-            # Use first output node
-            output_node_id = output_nodes[0].id
-            if output_node_id in context.node_outputs:
-                return context.node_outputs[output_node_id]
-        
-        # No output node, return all outputs
+            out_id = output_nodes[0].id
+            return context.node_outputs.get(out_id)
+
+        # If no explicit output node → return everything
         return context.node_outputs
-
-
