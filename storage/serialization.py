@@ -1,87 +1,101 @@
-"""Workflow serialization to/from JSON."""
+"""
+Workflow serialization layer for Mini-N8N.
+Provides safe conversion between Workflow <-> JSON <-> dict,
+including support for datetime, enums, and Pydantic v2 models.
+"""
 
 from typing import Dict, Any
-import json
 from pathlib import Path
+import json
+import hashlib
 
 from core.workflow import Workflow
 
 
+# -------------------------------------------------------------
+# Custom JSON Encoder (datetime, enums, UUID, pydantic objects)
+# -------------------------------------------------------------
+class EnhancedJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        # Pydantic models → dict
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump()
+
+        # Enum → value
+        if hasattr(obj, "value"):
+            return obj.value
+
+        # datetime → isoformat
+        try:
+            return obj.isoformat()
+        except Exception:
+            pass
+
+        # Fallback
+        return str(obj)
+
+
+# -------------------------------------------------------------
+# Workflow Serializer
+# -------------------------------------------------------------
 class WorkflowSerializer:
-    """Serialize and deserialize workflows to/from JSON."""
-    
+    """Serialize and deserialize workflows in a safe and structured format."""
+
+    # -----------------------------------------------------
+    # Serialization → JSON String
+    # -----------------------------------------------------
     @staticmethod
-    def to_json(workflow: Workflow) -> str:
-        """Serialize workflow to JSON string.
-        
-        Args:
-            workflow: Workflow to serialize
-            
-        Returns:
-            JSON string
-        """
-        data = workflow.to_dict()
-        return json.dumps(data, indent=2, default=str)
-    
+    def to_json(workflow: Workflow, pretty: bool = True) -> str:
+        data = workflow.model_dump()
+
+        if pretty:
+            return json.dumps(data, indent=2, cls=EnhancedJSONEncoder)
+
+        return json.dumps(data, cls=EnhancedJSONEncoder)
+
+    # -----------------------------------------------------
+    # Parsing JSON → Workflow object
+    # -----------------------------------------------------
     @staticmethod
     def from_json(json_str: str) -> Workflow:
-        """Deserialize workflow from JSON string.
-        
-        Args:
-            json_str: JSON string
-            
-        Returns:
-            Workflow object
-        """
         data = json.loads(json_str)
-        return Workflow.from_dict(data)
-    
+        return Workflow.model_validate(data)
+
+    # -----------------------------------------------------
+    # Save Workflow to file
+    # -----------------------------------------------------
     @staticmethod
-    def to_file(workflow: Workflow, filepath: str) -> None:
-        """Save workflow to JSON file.
-        
-        Args:
-            workflow: Workflow to save
-            filepath: Path to file
-        """
-        json_str = WorkflowSerializer.to_json(workflow)
-        Path(filepath).write_text(json_str)
-    
+    def to_file(workflow: Workflow, filepath: str, pretty: bool = True) -> None:
+        json_str = WorkflowSerializer.to_json(workflow, pretty=pretty)
+        Path(filepath).write_text(json_str, encoding="utf-8")
+
+    # -----------------------------------------------------
+    # Load Workflow from file
+    # -----------------------------------------------------
     @staticmethod
     def from_file(filepath: str) -> Workflow:
-        """Load workflow from JSON file.
-        
-        Args:
-            filepath: Path to file
-            
-        Returns:
-            Workflow object
-        """
-        json_str = Path(filepath).read_text()
+        json_str = Path(filepath).read_text(encoding="utf-8")
         return WorkflowSerializer.from_json(json_str)
-    
+
+    # -----------------------------------------------------
+    # Convert Workflow → dict
+    # -----------------------------------------------------
     @staticmethod
     def to_dict(workflow: Workflow) -> Dict[str, Any]:
-        """Convert workflow to dictionary.
-        
-        Args:
-            workflow: Workflow to convert
-            
-        Returns:
-            Dictionary representation
-        """
-        return workflow.to_dict()
-    
+        return workflow.model_dump()
+
+    # -----------------------------------------------------
+    # Convert dict → Workflow
+    # -----------------------------------------------------
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> Workflow:
-        """Create workflow from dictionary.
-        
-        Args:
-            data: Dictionary representation
-            
-        Returns:
-            Workflow object
-        """
-        return Workflow.from_dict(data)
+        return Workflow.model_validate(data)
 
-
+    # -----------------------------------------------------
+    # Workflow checksum (useful for versioning)
+    # -----------------------------------------------------
+    @staticmethod
+    def compute_checksum(workflow: Workflow) -> str:
+        """Compute SHA256 checksum of workflow content."""
+        content = WorkflowSerializer.to_json(workflow, pretty=False)
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
